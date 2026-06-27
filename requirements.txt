@@ -6,6 +6,7 @@ torch>=2.2,<3.0
 torchvision>=0.17,<1.0
 
 opencv-python-headless>=4.8,<5.0
+opencv-python
 
 ultralytics>=8.2,<9.0
 
