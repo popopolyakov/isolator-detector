@@ -41,12 +41,12 @@ def models() -> dict:
     return {"models": list_models()}
 
 
-def _run(model_id: str, data: bytes, conf: float, iou: float) -> dict:
+def _run(model_id: str, data: bytes, conf: float, iou: float, imgsz: int = 640) -> dict:
     try:
         detector = Detector.get(model_id)
     except KeyError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return detector.predict(data, conf=conf, iou=iou)
+    return detector.predict(data, conf=conf, iou=iou, imgsz=imgsz)
 
 
 @app.post("/predict")
@@ -55,11 +55,12 @@ async def predict(
     model_id: str = Form("accurate"),
     conf: float = Form(0.25),
     iou: float = Form(0.45),
+    imgsz: int = Form(640),
 ) -> JSONResponse:
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="empty file")
-    result = _run(model_id, data, conf=conf, iou=iou)
+    result = _run(model_id, data, conf=conf, iou=iou, imgsz=imgsz)
     payload = {k: v for k, v in result.items() if k != "annotated_jpeg"}
     payload["annotated_jpeg_b64"] = base64.b64encode(result["annotated_jpeg"]).decode("ascii")
     return JSONResponse(payload)
@@ -71,9 +72,10 @@ async def predict_image(
     model_id: str = Form("accurate"),
     conf: float = Form(0.25),
     iou: float = Form(0.45),
+    imgsz: int = Form(640),
 ) -> Response:
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="empty file")
-    result = _run(model_id, data, conf=conf, iou=iou)
+    result = _run(model_id, data, conf=conf, iou=iou, imgsz=imgsz)
     return Response(content=result["annotated_jpeg"], media_type="image/jpeg")

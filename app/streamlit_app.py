@@ -1,19 +1,26 @@
 from __future__ import annotations
 
+import base64
+import io
+import json
+import os
 import sys
+import time
 from pathlib import Path
+from typing import Any
+
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-import io
-import json
-
 import pandas as pd
+import requests
 import streamlit as st
 from PIL import Image
 
-from app.inference import CLASSES, MODELS, Detector, list_models
+from app.inference import CLASSES, MODELS, list_models
+
+BACKEND_URL = os.environ.get("BACKEND_URL", "http://localhost:8000").rstrip("/")
 
 st.set_page_config(
     page_title="Детектор дефектов ЛЭП",
@@ -129,11 +136,48 @@ if uploaded is not None:
 
     with st.spinner(f"Запускаю модель «{by_id[choice]['label']}»…"):
         try:
-            detector = Detector.get(choice)
-            result = detector.predict(file_bytes, conf=conf, iou=iou, imgsz=imgsz)
+            t0 = time.perf_counter()
+            resp = requests.post(
+                f"{BACKEND_URL}/predict",
+                files={"file": ("image.jpg", file_bytes, "image/jpeg")},  # type: ignore[arg-type]
+                data={"model_id": choice, "conf": conf, "iou": iou, "imgsz": imgsz},
+                timeout=60,
+            )
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            resp.raise_for_status()
+            body: dict[str, Any] = resp.json()
+            annotated = base64.b64decode(body["annotated_jpeg_b64"])
+            result = {
+                "detections": body["detections"],
+                "inference_ms": body["inference_ms"],
+                "image_size": body["image_size"],
+                "annotated_jpeg": annotated,
+            }
+            http_meta = {
+                "url": f"{BACKEND_URL}/predict",
+                "status": resp.status_code,
+                "elapsed_ms": elapsed_ms,
+                "model_label": body.get("model_label", ""),
+                "using_local_weights": body.get("using_local_weights", False),
+            }
+        except requests.exceptions.ConnectionError as exc:
+            st.error(
+                f"Не удалось подключиться к бэкенду по адресу {BACKEND_URL}/predict. "
+                f"Запустите `python -m app.serve` или `uvicorn app.backend_api:app`.\n\n"
+                f"Ошибка: {exc}"
+            )
+            st.stop()
         except Exception as exc:  # pragma: no cover
             st.error(f"Ошибка инференса: {exc}")
             st.stop()
+
+    # Индикатор «запрос ушёл через HTTP» — рядом с результатами.
+    weights_tag = "локальные веса" if http_meta["using_local_weights"] else "fallback на претрен."
+    st.caption(
+        f"POST /predict → `{http_meta['url']}` · "
+        f"✓ {http_meta['status']} · {http_meta['elapsed_ms']:.0f} мс · "
+        f"{http_meta['model_label']} · {weights_tag}"
+    )
 
     with col1:
         st.markdown("**Исходное изображение**")

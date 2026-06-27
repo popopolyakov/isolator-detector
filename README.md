@@ -32,7 +32,8 @@
 ```
 isolator-detector/
 ├── app/
-│   ├── streamlit_app.py            # Streamlit-фронтенд
+│   ├── serve.py                    # Единая точка входа: FastAPI (:8000) + Streamlit (:8501)
+│   ├── streamlit_app.py            # Streamlit-фронтенд (ходит в BACKEND_URL через HTTP)
 │   ├── backend_api.py              # FastAPI-бэкенд
 │   ├── inference.py                # Общая логика инференса, реестр моделей
 │   └── models/                     # Обученные веса + metrics.json
@@ -248,24 +249,51 @@ ground-truth инстанса). Окружение — `ultralytics 8.4.67`, `py
 
 ## Веб-приложение
 
-Streamlit-фронтенд (`app/streamlit_app.py`) — единая точка входа для
-демо и ручной валидации. Главный файл для деплоя на Streamlit Cloud:
-`app/streamlit_app.py`.
+Двухпроцессная схема: **FastAPI**-бэкенд (`:8000`) обслуживает инференс,
+**Streamlit**-фронтенд (`:8501`) ходит к нему через HTTP.
+
+Единая точка входа — `app/serve.py`: поднимает uvicorn в фоновом потоке
+того же процесса, ждёт готовности `/health`, затем запускает Streamlit в
+основном потоке. Главный файл для деплоя на Streamlit Cloud —
+`app/serve.py`.
+
+Локально:
+
+```bash
+streamlit run app/serve.py --server.port 8501
+# Streamlit на :8501, FastAPI на :8000
+```
+
+Если бэкенд уже поднят отдельно — `serve.py` его переиспользует:
+
+```bash
+uvicorn app.backend_api:app --port 8000 &   # в другом терминале
+streamlit run app/serve.py                   # подхватит уже занятый :8000
+```
+
+Адрес бэкенда для фронтенда задаётся переменной окружения `BACKEND_URL`
+(по умолчанию `http://localhost:8000`).
+
+Под результатом детекции в UI — индикатор HTTP-запроса:
+
+```
+POST /predict → http://localhost:8000 · ✓ 200 · 142 мс · YOLO11l-OBB — точная · локальные веса
+```
 
 ---
 
 ## REST API
 
 FastAPI-бэкенд (`app/backend_api.py`) — программный доступ к инференсу.
-Запуск — `uvicorn app.backend_api:app --reload`, Swagger UI —
-`/docs`.
+Запуск напрямую (без `serve.py`) — `uvicorn app.backend_api:app --reload`,
+Swagger UI — `/docs`.
 
 | Метод | URL              | Описание                                                            |
 |-------|------------------|---------------------------------------------------------------------|
 | GET   | `/`              | Информация о сервисе                                               |
 | GET   | `/health`        | `{"status":"ok"}`                                                  |
 | GET   | `/models`        | Список моделей из реестра                                          |
-| POST  | `/predict`       | `multipart`: `file`, `model_id`, `conf`, `iou` -> JSON + base64    |
+| POST  | `/predict`       | `multipart`: `file`, `model_id`, `conf`, `iou`, `imgsz` -> JSON + base64 |
 | POST  | `/predict/image` | То же, что `/predict`, но возвращает JPEG напрямую                 |
 
 Структура ответа `/predict`:
