@@ -178,7 +178,7 @@ uploaded = st.file_uploader(
 )
 
 # Demo gallery: pick a sample from the local val set if the user hasn't uploaded
-SAMPLES_DIR = Path("data/insulators_yolo/images/val")
+SAMPLES_DIR = Path("data/samples")
 sample_files: list[Path] = []
 if SAMPLES_DIR.exists():
     sample_files = sorted(SAMPLES_DIR.iterdir())[:8]
