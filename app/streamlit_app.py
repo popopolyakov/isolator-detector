@@ -23,16 +23,19 @@ from PIL import Image
 from app.inference import CLASSES, MODELS, list_models
 
 BACKEND_URL = os.environ.get("BACKEND_URL", "http://localhost:8000").rstrip("/")
-BACKEND_HOST = os.environ.get("BACKEND_HOST", "0.0.0.0")
+# На Streamlit Cloud bind на 0.0.0.0 снаружи бывает заблокирован, поэтому
+# хост по умолчанию 127.0.0.1 — Streamlit UI всё равно ходит на localhost.
+BACKEND_HOST = os.environ.get("BACKEND_HOST", "127.0.0.1")
 _BACKEND_PORT = int(os.environ.get("BACKEND_PORT", "8000"))
 
 
 def _backend_already_up(host: str, port: int) -> bool:
     """Проверка, не запущен ли FastAPI извне (отдельным процессом)."""
+    check_host = "127.0.0.1" if host in ("0.0.0.0", "") else host
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(0.3)
         try:
-            sock.connect((host if host != "0.0.0.0" else "127.0.0.1", port))
+            sock.connect((check_host, port))
         except OSError:
             return False
         return True
@@ -57,32 +60,49 @@ def _spawn_backend_once() -> None:
     Идемпотентно: повторные вызовы не плодят uvicorn-серверы.
     """
     if getattr(_spawn_backend_once, "_done", False):
+        print(f"[streamlit_app] backend already spawned, skipping", flush=True)
         return
-    _spawn_backend_once._done = True  # type: ignore[attr-defined]
 
+    print(f"[streamlit_app] checking if backend up at {BACKEND_HOST}:{_BACKEND_PORT}",
+          flush=True)
     if _backend_already_up(BACKEND_HOST, _BACKEND_PORT):
+        print("[streamlit_app] backend already up, not starting another", flush=True)
+        _spawn_backend_once._done = True  # type: ignore[attr-defined]
         return
 
-    import uvicorn
-    from app.backend_api import app as fastapi_app
+    print(f"[streamlit_app] starting uvicorn on {BACKEND_HOST}:{_BACKEND_PORT}",
+          flush=True)
+    try:
+        import uvicorn
+        from app.backend_api import app as fastapi_app
 
-    config = uvicorn.Config(
-        fastapi_app,
-        host=BACKEND_HOST,
-        port=_BACKEND_PORT,
-        log_level=os.environ.get("BACKEND_LOG_LEVEL", "warning"),
-        reload=False,
-        workers=1,
-    )
-    server = uvicorn.Server(config)
-    thread = threading.Thread(target=server.run, name="uvicorn", daemon=True)
-    thread.start()
-    _wait_for_backend(BACKEND_URL)
+        config = uvicorn.Config(
+            fastapi_app,
+            host=BACKEND_HOST,
+            port=_BACKEND_PORT,
+            log_level=os.environ.get("BACKEND_LOG_LEVEL", "info"),
+            reload=False,
+            workers=1,
+        )
+        server = uvicorn.Server(config)
+        thread = threading.Thread(target=server.run, name="uvicorn", daemon=True)
+        thread.start()
+        _wait_for_backend(BACKEND_URL)
+        print(f"[streamlit_app] backend ready at {BACKEND_URL}", flush=True)
+    except Exception as exc:
+        print(f"[streamlit_app] backend start FAILED: {type(exc).__name__}: {exc}",
+              flush=True)
+        raise
+    finally:
+        _spawn_backend_once._done = True  # type: ignore[attr-defined]
 
 
 # Поднимаем бэкенд сразу при импорте — Streamlit Cloud делает
 # `streamlit run app/streamlit_app.py`, поэтому до любого rerun это безопасно.
-_spawn_backend_once()
+try:
+    _spawn_backend_once()
+except Exception as exc:
+    print(f"[streamlit_app] _spawn_backend_once raised: {exc}", flush=True)
 
 st.set_page_config(
     page_title="Детектор дефектов ЛЭП",
