@@ -1,3 +1,2 @@
-# System packages required for opencv-python on Streamlit Cloud (Debian base image).
 libgl1
 libglib2.0-0
