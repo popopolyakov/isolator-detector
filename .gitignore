@@ -1,0 +1,48 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Environments ---
+.venv/
+venv/
+env/
+
+# --- IDE ---
+.idea/
+.vscode/
+*.iml
+.DS_Store
+
+# --- Project artefacts ---
+data/insulators_yolo/
+data/insulators_yolo.zip
+
+# YOLO training artefacts
+runs/
+
+# Ignore all .pt except the trained checkpoints and the .gitkeep in app/models/
+*.pt
+!app/models/.gitkeep
+!app/models/fast_yolov8n-obb.pt
+!app/models/accurate_yolo11l-obb.pt
+
+# OS / misc
+Thumbs.db
+*.swp
+*.tmp
+
+# Streamlit secrets (do not commit)
+.streamlit/secrets.toml
+
+# ultralytics pretrained weights cache (downloaded on first run)
+.cache/
+yolo*.pt
+
+/Дефекты линий электропередач_v3/
+/notebooks/.ipynb_checkpoints/

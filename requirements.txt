@@ -1,0 +1,20 @@
+# Pinned for reproducibility. Versions that work on Python 3.11–3.13.
+# (Python 3.14 wheels may lag behind — if torch install fails, use Python 3.12.)
+#
+# Core ML
+torch>=2.2,<3.0
+torchvision>=0.17,<1.0
+ultralytics>=8.2,<9.0
+
+# Web backend
+fastapi>=0.110,<1.0
+uvicorn[standard]>=0.27,<1.0
+python-multipart>=0.0.9
+
+# Web frontend
+streamlit>=1.32,<2.0
+pandas>=2.0
+Pillow>=10.0
+numpy>=1.26
+pyyaml>=6.0
+requests>=2.31

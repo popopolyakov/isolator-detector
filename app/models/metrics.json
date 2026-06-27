@@ -1,0 +1,14 @@
+{
+  "fast": {
+    "model": "yolov8n-obb",
+    "mAP@0.5": 0.8717172887552047,
+    "mAP@0.5:0.95": 0.686504834583672,
+    "weights": "fast_yolov8n-obb.pt"
+  },
+  "accurate": {
+    "model": "yolo11l-obb",
+    "mAP@0.5": 0.913012842635073,
+    "mAP@0.5:0.95": 0.7527037219595323,
+    "weights": "accurate_yolo11l-obb.pt"
+  }
+}

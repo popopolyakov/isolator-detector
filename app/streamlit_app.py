@@ -1,0 +1,232 @@
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+import io
+import json
+
+import pandas as pd
+import streamlit as st
+from PIL import Image
+
+from app.inference import CLASSES, MODELS, Detector, list_models
+
+st.set_page_config(
+    page_title="Детектор дефектов ЛЭП",
+    page_icon="⚡",
+    layout="wide",
+)
+
+# ----------------------------- Header / Sidebar --------------------------------
+
+st.title("⚡ Детектор дефектов ЛЭП")
+st.markdown(
+    "Веб-приложение для автоматического обнаружения элементов и повреждений "
+    "на воздушных линиях электропередачи: **изоляторы**, **гасители вибрации**, "
+    "**траверсы**, **гнёзда птиц**, **диспетчерские таблички**."
+)
+
+with st.sidebar:
+    st.header("⚙️ Параметры")
+
+    # ---- model selector (this is the "не менее 2 моделей" feature) ----
+    available = list_models()
+    by_id = {m["id"]: m for m in available}
+
+    choice = st.radio(
+        "Модель",
+        options=list(by_id.keys()),
+        format_func=lambda mid: f"{by_id[mid]['label']}\n"
+                               f"   ~{by_id[mid]['size_mb_approx']} МБ • "
+                               f"{'локальные веса' if by_id[mid]['weights_available'] else 'fallback на претрен.'}",
+        help=(
+            "**Быстрая** — YOLOv8n-OBB: запускается на слабых машинах, ниже точность.\n\n"
+            "**Точная** — YOLO11l-OBB: основной выбор, выше mAP, но требует больше ресурсов.\n\n"
+            "Обе модели — OBB (Oriented Bounding Box): предсказывают повёрнутые "
+            "рамки, что критично для диагональных гирлянд изоляторов."
+        ),
+    )
+    st.caption(by_id[choice]["description"])
+    if not by_id[choice]["weights_available"]:
+        st.warning(
+            "Локально обученные веса не найдены — приложение работает на "
+            "претренированных YOLOv8 из ultralytics. Чтобы получить "
+            "детекцию наших классов, сначала запустите `notebooks/train.ipynb`.",
+            icon="ℹ️",
+        )
+
+    st.divider()
+
+    conf = st.slider("Порог уверенности (conf)", 0.05, 0.95, 0.25, 0.05,
+                     help="Отсекает детекции ниже этой вероятности.")
+    iou = st.slider("IoU (NMS)", 0.05, 0.95, 0.45, 0.05,
+                    help="Порог для non-maximum suppression.")
+    imgsz = st.select_slider("Размер входа", options=[320, 480, 640, 800, 960],
+                             value=960,
+                             help="Больше = точнее на мелких объектах, но медленнее. "
+                                  "Модели обучены на 960.")
+
+    st.divider()
+    st.markdown("**Классы детекции**")
+    cls_df = pd.DataFrame([{
+        "ID": c["id"],
+        "Класс": c["ru"],
+        "Нарушение": "⚠️" if c["is_violation"] else "",
+    } for c in CLASSES])
+    st.dataframe(cls_df, hide_index=True, use_container_width=True)
+
+
+# ----------------------------- Main area --------------------------------------
+
+uploaded = st.file_uploader(
+    "Загрузите изображение с ЛЭП",
+    type=["jpg", "jpeg", "png", "bmp", "webp"],
+    help="Поддерживаются jpg/png. Для дрон-съёмки типично 4K — приложение само уменьшит до imgsz.",
+)
+
+# Demo gallery: pick a sample from the local val set if the user hasn't uploaded
+SAMPLES_DIR = Path("data/insulators_yolo/images/val")
+sample_files: list[Path] = []
+if SAMPLES_DIR.exists():
+    sample_files = sorted(SAMPLES_DIR.iterdir())[:8]
+if sample_files and not uploaded:
+    st.markdown("##### или выберите пример из валидационного набора")
+    cols = st.columns(4)
+    picked: Path | None = None
+    for i, p in enumerate(sample_files):
+        with cols[i % 4]:
+            try:
+                thumb = Image.open(p)
+                thumb.thumbnail((220, 220))
+                if st.button(f"📷 {p.stem[:24]}", key=f"sample_{i}", use_container_width=True):
+                    picked = p
+                st.image(thumb, use_container_width=True)
+            except Exception:
+                pass
+    if picked is not None:
+        # BufferedReader из Path.open("rb") read-only по .name, поэтому заворачиваем
+        # в BytesIO — у него есть и .read(), и .seek(), и атрибут .name можно ставить.
+        uploaded = io.BytesIO(picked.read_bytes())
+
+
+if uploaded is not None:
+    file_bytes = uploaded.read() if hasattr(uploaded, "read") else uploaded
+    # Reset pointer for downstream reads
+    if hasattr(uploaded, "seek"):
+        try:
+            uploaded.seek(0)
+        except Exception:
+            pass
+
+    pil_img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
+    st.markdown("### Результаты")
+
+    col1, col2 = st.columns(2)
+
+    with st.spinner(f"Запускаю модель «{by_id[choice]['label']}»…"):
+        try:
+            detector = Detector.get(choice)
+            result = detector.predict(file_bytes, conf=conf, iou=iou, imgsz=imgsz)
+        except Exception as exc:  # pragma: no cover
+            st.error(f"Ошибка инференса: {exc}")
+            st.stop()
+
+    with col1:
+        st.markdown("**Исходное изображение**")
+        st.image(pil_img, use_container_width=True)
+
+    with col2:
+        st.markdown("**Детекции**")
+        st.image(result["annotated_jpeg"], use_container_width=True)
+
+    # ---- summary metrics ----
+    n = len(result["detections"])
+    violations = sum(1 for d in result["detections"] if d["is_violation"])
+    by_class: dict[str, int] = {}
+    for d in result["detections"]:
+        by_class[d["class_ru"]] = by_class.get(d["class_ru"], 0) + 1
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Всего объектов", n)
+    m2.metric("Нарушений", violations,
+              help="Классы с флагом is_violation: гнездо, отсутствующий/повреждённый изолятор.")
+    m3.metric("Время инференса, мс", f"{result['inference_ms']:.0f}")
+    m4.metric("Размер изображения", f"{pil_img.width}×{pil_img.height}")
+
+    if n == 0:
+        st.info("На изображении не найдено объектов с заданным порогом. "
+                "Попробуйте снизить conf.", icon="🔍")
+    else:
+        st.markdown("#### Таблица детекций")
+        df = pd.DataFrame([{
+            "Класс (рус.)": d["class_ru"],
+            "Класс (англ.)": d["class_key"],
+            "Уверенность": d["confidence"],
+            "Нарушение": "⚠️ да" if d["is_violation"] else "нет",
+            "Угол, °": d.get("rotation_deg", 0.0),
+            "Центр (x, y)": f"({(d['bbox_xyxy'][0] + d['bbox_xyxy'][2]) / 2:.0f}, "
+                            f"{(d['bbox_xyxy'][1] + d['bbox_xyxy'][3]) / 2:.0f})",
+        } for d in result["detections"]])
+        df = df.sort_values("Уверенность", ascending=False).reset_index(drop=True)
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+        with st.expander("📐 4 вершины OBB (детально)"):
+            for d in result["detections"]:
+                p = d["bbox_points"]
+                st.markdown(
+                    f"**{d['class_ru']}** ({d['confidence']:.2f}, "
+                    f"угол {d.get('rotation_deg', 0.0):.1f}°):  "
+                    f"`({p[0]:.0f},{p[1]:.0f}) ({p[2]:.0f},{p[3]:.0f}) "
+                    f"({p[4]:.0f},{p[5]:.0f}) ({p[6]:.0f},{p[7]:.0f})`"
+                )
+
+        st.markdown("#### Распределение по классам")
+        st.bar_chart(pd.DataFrame(
+            {"Количество": list(by_class.values())},
+            index=list(by_class.keys()),
+        ))
+
+        # ---- download annotated image ----
+        st.download_button(
+            "⬇️ Скачать размеченное изображение (JPEG)",
+            data=result["annotated_jpeg"],
+            file_name="annotated.jpg",
+            mime="image/jpeg",
+        )
+
+    # ---- raw JSON (for debugging / API users) ----
+    with st.expander("🔧 Сырой JSON ответа (как у FastAPI /predict)"):
+        debug = {k: v for k, v in result.items() if k != "annotated_jpeg"}
+        debug["annotated_jpeg_b64_len"] = len(result["annotated_jpeg"])
+        st.code(json.dumps(debug, ensure_ascii=False, indent=2), language="json")
+
+else:
+    st.info("⬆️ Загрузите изображение, чтобы начать детекцию.", icon="📤")
+
+    with st.expander("ℹ️ О моделях и обучении"):
+        st.markdown(
+            f"""
+**Используемые фреймворки:** `ultralytics` (YOLOv8), `streamlit`, `fastapi`.
+
+**Датасет:** «Дефекты линий электропередач v3» — {len(CLASSES)} классов, ~8000 изображений,
+~38.6k размеченных объектов.
+
+**Обучение:** смотри `notebooks/train.ipynb`. Там обучаются обе модели:
+- **{MODELS['fast']['label']}** — для real-time / слабых CPU
+- **{MODELS['accurate']['label']}** — для финальной разметки
+
+После обучения лучшие веса автоматически сохраняются в `app/models/` и подхватываются
+этим приложением. До этого момента приложение работает на претренированных весах ultralytics
+(детекция «общих» классов COCO — для демонстрации пайплайна).
+
+**Запуск бэкенда отдельно (FastAPI):**
+```bash
+uvicorn app.backend_api:app --reload
+# Документация: http://127.0.0.1:8000/docs
+```
+"""
+        )
