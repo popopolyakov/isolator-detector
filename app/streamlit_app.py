@@ -4,7 +4,9 @@ import base64
 import io
 import json
 import os
+import socket
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -21,6 +23,66 @@ from PIL import Image
 from app.inference import CLASSES, MODELS, list_models
 
 BACKEND_URL = os.environ.get("BACKEND_URL", "http://localhost:8000").rstrip("/")
+BACKEND_HOST = os.environ.get("BACKEND_HOST", "0.0.0.0")
+_BACKEND_PORT = int(os.environ.get("BACKEND_PORT", "8000"))
+
+
+def _backend_already_up(host: str, port: int) -> bool:
+    """Проверка, не запущен ли FastAPI извне (отдельным процессом)."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.3)
+        try:
+            sock.connect((host if host != "0.0.0.0" else "127.0.0.1", port))
+        except OSError:
+            return False
+        return True
+
+
+def _wait_for_backend(url: str, timeout_s: float = 15.0) -> None:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        try:
+            r = requests.get(f"{url}/health", timeout=1.0)
+            if r.status_code == 200:
+                return
+        except Exception:
+            pass
+        time.sleep(0.2)
+    raise RuntimeError(f"Backend at {url} did not become ready within {timeout_s}s")
+
+
+def _spawn_backend_once() -> None:
+    """Поднять FastAPI в фоновом потоке, если порт свободен.
+    Делается один раз на процесс (через флаг модуля).
+    Идемпотентно: повторные вызовы не плодят uvicorn-серверы.
+    """
+    if getattr(_spawn_backend_once, "_done", False):
+        return
+    _spawn_backend_once._done = True  # type: ignore[attr-defined]
+
+    if _backend_already_up(BACKEND_HOST, _BACKEND_PORT):
+        return
+
+    import uvicorn
+    from app.backend_api import app as fastapi_app
+
+    config = uvicorn.Config(
+        fastapi_app,
+        host=BACKEND_HOST,
+        port=_BACKEND_PORT,
+        log_level=os.environ.get("BACKEND_LOG_LEVEL", "warning"),
+        reload=False,
+        workers=1,
+    )
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, name="uvicorn", daemon=True)
+    thread.start()
+    _wait_for_backend(BACKEND_URL)
+
+
+# Поднимаем бэкенд сразу при импорте — Streamlit Cloud делает
+# `streamlit run app/streamlit_app.py`, поэтому до любого rerun это безопасно.
+_spawn_backend_once()
 
 st.set_page_config(
     page_title="Детектор дефектов ЛЭП",

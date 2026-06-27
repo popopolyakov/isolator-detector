@@ -249,26 +249,28 @@ ground-truth инстанса). Окружение — `ultralytics 8.4.67`, `py
 
 ## Веб-приложение
 
-Двухпроцессная схема: **FastAPI**-бэкенд (`:8000`) обслуживает инференс,
-**Streamlit**-фронтенд (`:8501`) ходит к нему через HTTP.
+Двухсервисная схема внутри одного процесса: **FastAPI** (`:8000`)
+обслуживает инференс, **Streamlit** (`:8501`) ходит к нему через HTTP —
+в DevTools видны реальные `POST /predict`.
 
-Единая точка входа — `app/serve.py`: поднимает uvicorn в фоновом потоке
-того же процесса, ждёт готовности `/health`, затем запускает Streamlit в
-основном потоке. Главный файл для деплоя на Streamlit Cloud —
-`app/serve.py`.
+`app/streamlit_app.py` — единая точка входа. При импорте он
+автоматически поднимает uvicorn в фоновом daemon-потоке (если порт
+`:8000` свободен) и ждёт готовности `/health`. Если FastAPI уже поднят
+отдельно — переиспользует его. Главный файл для деплоя на Streamlit
+Cloud — `app/streamlit_app.py` (задаётся в `app.toml` или в UI).
 
 Локально:
 
 ```bash
-streamlit run app/serve.py --server.port 8501
-# Streamlit на :8501, FastAPI на :8000
+streamlit run app/streamlit_app.py
+# Streamlit на :8501, FastAPI на :8000 (поднялся сам)
 ```
 
-Если бэкенд уже поднят отдельно — `serve.py` его переиспользует:
+Или двумя процессами, если хочется дебажить API отдельно:
 
 ```bash
-uvicorn app.backend_api:app --port 8000 &   # в другом терминале
-streamlit run app/serve.py                   # подхватит уже занятый :8000
+uvicorn app.backend_api:app --reload
+streamlit run app/streamlit_app.py   # подхватит уже занятый :8000
 ```
 
 Адрес бэкенда для фронтенда задаётся переменной окружения `BACKEND_URL`
@@ -285,8 +287,8 @@ POST /predict → http://localhost:8000 · ✓ 200 · 142 мс · YOLO11l-OBB �
 ## REST API
 
 FastAPI-бэкенд (`app/backend_api.py`) — программный доступ к инференсу.
-Запуск напрямую (без `serve.py`) — `uvicorn app.backend_api:app --reload`,
-Swagger UI — `/docs`.
+Поднимается автоматически вместе со Streamlit, либо отдельно —
+`uvicorn app.backend_api:app --reload`, Swagger UI — `/docs`.
 
 | Метод | URL              | Описание                                                            |
 |-------|------------------|---------------------------------------------------------------------|
